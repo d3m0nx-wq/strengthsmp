@@ -45,7 +45,7 @@ const UPSTREAM_URL = 'wss://YOUR-SERVER.eagler.host/';
 to your EaglerHost WSS endpoint:
 
 ```js
-const UPSTREAM_URL = 'wss://YourServer.eagler.host/';
+const UPSTREAM_URL = 'wss://exampleserver.eagler.host/';
 ```
 
 > Keep the trailing `/` if your host uses it.
