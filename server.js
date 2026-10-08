@@ -7,7 +7,7 @@
  *   wss://your-strengthsmp.onrender.com/
  *
  * Backend:
- *   ws://node1.coolcraft.network:25584/
+ *   ws://node1.coolcraft.network:25597/
  */
 
 const http = require('http');
@@ -19,7 +19,7 @@ const PORT = process.env.PORT || 10000;
 
 const UPSTREAM_WS =
   process.env.UPSTREAM_WS ||
-  'ws://node1.coolcraft.network:25584/';
+  'ws://node1.coolcraft.network:25597/';
 
 const WS_SECRET_PATH =
   process.env.WS_SECRET_PATH || '';
