@@ -1,18 +1,13 @@
 'use strict';
 
 /**
- * =========================================================
- * Eagler WSS Reverse Proxy + Static Site
- * =========================================================
- * Render provides the secure WSS connection.
- * This proxy connects from Render -> CoolCraft using WS.
+ * StrengthSMP Eagler WSS Proxy
  *
- * Eagler client:
- *   wss://YOUR-RENDER-SERVICE.onrender.com/
+ * Frontend:
+ *   wss://your-strengthsmp.onrender.com/
  *
- * CoolCraft backend:
+ * Backend:
  *   ws://node1.coolcraft.network:25584/
- * =========================================================
  */
 
 const http = require('http');
@@ -20,38 +15,25 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
-/* =======================
-   CONFIG
-   ======================= */
-
 const PORT = process.env.PORT || 10000;
 
-// CoolCraft EaglerXServer WS endpoint
 const UPSTREAM_WS =
   process.env.UPSTREAM_WS ||
   'ws://node1.coolcraft.network:25584/';
 
-// Optional secret path.
-// Leave empty to allow any path.
 const WS_SECRET_PATH =
   process.env.WS_SECRET_PATH || '';
 
-// Static website folder
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-
-/* =======================
-   INTERNALS
-   ======================= */
-
-function log(...a) {
-  console.log(new Date().toISOString(), ...a);
+function log(...args) {
+  console.log(new Date().toISOString(), ...args);
 }
 
 function contentType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
 
-  return ({
+  return {
     '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
@@ -63,22 +45,16 @@ function contentType(filePath) {
     '.webp': 'image/webp',
     '.svg': 'image/svg+xml',
     '.ico': 'image/x-icon',
-    '.txt': 'text/plain; charset=utf-8',
-  })[ext] || 'application/octet-stream';
+    '.txt': 'text/plain; charset=utf-8'
+  }[ext] || 'application/octet-stream';
 }
-
-
-/* =======================
-   STATIC WEBSITE
-   ======================= */
 
 function serveStatic(req, res) {
   const urlPathRaw = (req.url || '').split('?')[0];
 
-  // Health check for Render
   if (urlPathRaw === '/health') {
     res.writeHead(200, {
-      'content-type': 'text/plain; charset=utf-8',
+      'content-type': 'text/plain; charset=utf-8'
     });
 
     res.end('ok\n');
@@ -99,7 +75,7 @@ function serveStatic(req, res) {
       .replace(/^(\.\.(\/|\\|$))+/, '');
   } catch {
     res.writeHead(400, {
-      'content-type': 'text/plain; charset=utf-8',
+      'content-type': 'text/plain; charset=utf-8'
     });
 
     res.end('Bad Request');
@@ -108,26 +84,25 @@ function serveStatic(req, res) {
 
   const filePath = path.join(PUBLIC_DIR, safePath);
 
-  // Prevent directory traversal
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403, {
-      'content-type': 'text/plain; charset=utf-8',
+      'content-type': 'text/plain; charset=utf-8'
     });
 
     res.end('Forbidden');
     return;
   }
 
-  fs.stat(filePath, (err, st) => {
+  fs.stat(filePath, (err, stat) => {
     const chosen =
-      (!err && st.isFile())
+      !err && stat.isFile()
         ? filePath
         : path.join(PUBLIC_DIR, 'index.html');
 
-    fs.readFile(chosen, (e2, data) => {
-      if (e2) {
+    fs.readFile(chosen, (readErr, data) => {
+      if (readErr) {
         res.writeHead(404, {
-          'content-type': 'text/plain; charset=utf-8',
+          'content-type': 'text/plain; charset=utf-8'
         });
 
         res.end('Not Found');
@@ -136,10 +111,9 @@ function serveStatic(req, res) {
 
       res.writeHead(200, {
         'content-type': contentType(chosen),
-        'cache-control':
-          chosen.endsWith('.html')
-            ? 'no-cache'
-            : 'public, max-age=86400',
+        'cache-control': chosen.endsWith('.html')
+          ? 'no-cache'
+          : 'public, max-age=86400'
       });
 
       res.end(data);
@@ -147,28 +121,13 @@ function serveStatic(req, res) {
   });
 }
 
-
-/* =======================
-   HTTP SERVER
-   ======================= */
-
 const server = http.createServer(serveStatic);
-
-
-/* =======================
-   WEBSOCKET SERVER
-   ======================= */
 
 const wss = new WebSocket.Server({
   noServer: true,
   perMessageDeflate: false,
-  maxPayload: 0,
+  maxPayload: 0
 });
-
-
-/* =======================
-   WEBSOCKET UPGRADE
-   ======================= */
 
 server.on('upgrade', (req, socket, head) => {
   const upgrade =
@@ -182,12 +141,7 @@ server.on('upgrade', (req, socket, head) => {
   const pathOnly =
     (req.url || '').split('?')[0];
 
-  // If a secret path is configured,
-  // require the exact path.
-  if (
-    WS_SECRET_PATH &&
-    pathOnly !== WS_SECRET_PATH
-  ) {
+  if (WS_SECRET_PATH && pathOnly !== WS_SECRET_PATH) {
     socket.destroy();
     return;
   }
@@ -202,13 +156,7 @@ server.on('upgrade', (req, socket, head) => {
   );
 });
 
-
-/* =======================
-   CLIENT CONNECTION
-   ======================= */
-
 wss.on('connection', (client, req) => {
-
   const ip =
     (req.headers['x-forwarded-for'] || '')
       .toString()
@@ -220,53 +168,43 @@ wss.on('connection', (client, req) => {
   const pathOnly =
     (req.url || '').split('?')[0];
 
-  const protoHeader =
+  const protocolHeader =
     req.headers['sec-websocket-protocol'];
 
-  const protocols = protoHeader
-    ? protoHeader
+  const protocols = protocolHeader
+    ? protocolHeader
         .split(',')
         .map(s => s.trim())
         .filter(Boolean)
     : undefined;
 
-  log('[IN ] ws connect', {
+  log('[IN ] connection', {
     ip,
     path: pathOnly,
-    protocols,
+    protocols
   });
 
-
-  /* =======================
-     PACKET QUEUE
-     ======================= */
-
-  const MAX_QUEUE_BYTES =
-    2 * 1024 * 1024;
+  const MAX_QUEUE_BYTES = 2 * 1024 * 1024;
 
   const queue = [];
   let queueBytes = 0;
-
-
-  /* =======================
-     CONNECT TO COOLCRAFT
-     ======================= */
 
   const upstream = new WebSocket(
     UPSTREAM_WS,
     protocols,
     {
       perMessageDeflate: false,
-      handshakeTimeout: 15000,
+      handshakeTimeout: 15000
     }
   );
 
+  let closed = false;
 
-  /* =======================
-     CLOSE CONNECTIONS
-     ======================= */
+  function kill(reason) {
+    if (closed) return;
 
-  const kill = (why) => {
+    closed = true;
+
     try {
       client.terminate();
     } catch {}
@@ -277,25 +215,20 @@ wss.on('connection', (client, req) => {
 
     log('[CLS]', {
       ip,
-      why,
+      reason
     });
-  };
-
-
-  /* =======================
-     QUEUE PACKETS
-     ======================= */
+  }
 
   function enqueue(data, isBinary) {
     const size =
       typeof data === 'string'
         ? Buffer.byteLength(data)
-        : (data?.length ?? 0);
+        : data?.length || 0;
 
     queue.push({
       data,
       isBinary,
-      size,
+      size
     });
 
     queueBytes += size;
@@ -305,181 +238,96 @@ wss.on('connection', (client, req) => {
     }
   }
 
-
-  /* =======================
-     CLIENT -> COOLCRAFT
-     ======================= */
-
   client.on('message', (data, isBinary) => {
-
-    if (
-      upstream.readyState ===
-      WebSocket.OPEN
-    ) {
-
+    if (upstream.readyState === WebSocket.OPEN) {
       upstream.send(data, {
         binary: isBinary,
-        compress: false,
+        compress: false
       });
 
-    } else if (
-      upstream.readyState ===
-      WebSocket.CONNECTING
-    ) {
-
-      enqueue(data, isBinary);
-
-    } else {
-
-      kill('upstream not available');
-
+      return;
     }
+
+    if (upstream.readyState === WebSocket.CONNECTING) {
+      enqueue(data, isBinary);
+      return;
+    }
+
+    kill('upstream unavailable');
   });
 
-
-  /* =======================
-     COOLCRAFT CONNECTED
-     ======================= */
-
   upstream.on('open', () => {
-
-    log('[UP ] open', {
+    log('[UP ] connected', {
       ip,
-      upstream: UPSTREAM_WS,
+      upstream: UPSTREAM_WS
     });
 
     while (
       queue.length &&
-      upstream.readyState ===
-      WebSocket.OPEN
+      upstream.readyState === WebSocket.OPEN
     ) {
+      const packet = queue.shift();
 
-      const m = queue.shift();
+      queueBytes -= packet.size;
 
-      queueBytes -= m.size;
-
-      upstream.send(m.data, {
-        binary: m.isBinary,
-        compress: false,
+      upstream.send(packet.data, {
+        binary: packet.isBinary,
+        compress: false
       });
     }
   });
 
-
-  /* =======================
-     COOLCRAFT -> CLIENT
-     ======================= */
-
-  upstream.on(
-    'message',
-    (data, isBinary) => {
-
-      if (
-        client.readyState ===
-        WebSocket.OPEN
-      ) {
-
-        client.send(data, {
-          binary: isBinary,
-          compress: false,
-        });
-
-      }
-    }
-  );
-
-
-  /* =======================
-     UPSTREAM CLOSED
-     ======================= */
-
-  upstream.on(
-    'close',
-    (code, reason) => {
-
-      log('[UP ] close', {
-        ip,
-        code,
-        reason:
-          reason?.toString?.() || '',
+  upstream.on('message', (data, isBinary) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data, {
+        binary: isBinary,
+        compress: false
       });
-
-      kill('upstream closed');
     }
-  );
+  });
 
+  upstream.on('close', (code, reason) => {
+    log('[UP ] closed', {
+      ip,
+      code,
+      reason: reason?.toString?.() || ''
+    });
 
-  /* =======================
-     CLIENT CLOSED
-     ======================= */
+    kill('upstream closed');
+  });
 
-  client.on(
-    'close',
-    (code, reason) => {
+  client.on('close', (code, reason) => {
+    log('[IN ] closed', {
+      ip,
+      code,
+      reason: reason?.toString?.() || ''
+    });
 
-      log('[IN ] close', {
-        ip,
-        code,
-        reason:
-          reason?.toString?.() || '',
-      });
+    kill('client closed');
+  });
 
-      kill('client closed');
-    }
-  );
-
-
-  /* =======================
-     UPSTREAM ERROR
-     ======================= */
-
-  upstream.on('error', (err) => {
-
+  upstream.on('error', (error) => {
     log('[UP ] error', {
       ip,
-      err:
-        err?.message ||
-        String(err),
+      error: error?.message || String(error)
     });
 
     kill('upstream error');
   });
 
-
-  /* =======================
-     CLIENT ERROR
-     ======================= */
-
-  client.on('error', (err) => {
-
+  client.on('error', (error) => {
     log('[IN ] error', {
       ip,
-      err:
-        err?.message ||
-        String(err),
+      error: error?.message || String(error)
     });
 
     kill('client error');
   });
-
 });
 
-
-/* =======================
-   START SERVER
-   ======================= */
-
-server.listen(
-  PORT,
-  '0.0.0.0',
-  () => {
-
-    log(
-      `listening on ${PORT} ` +
-      `(HTTP: /public, ` +
-      `WSS frontend, ` +
-      `WS upstream: ${UPSTREAM_WS})`
-    );
-
-  }
-);
+server.listen(PORT, '0.0.0.0', () => {
+  log(
+    `StrengthSMP proxy listening on ${PORT} | ` +
+    `WSS frontend | WS upstream: ${UPSTREAM_WS}`
+  );
+});
