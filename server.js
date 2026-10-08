@@ -1,42 +1,27 @@
-```js
-'use strict';
 
-/**
- * StrengthSMP Eagler WSS Proxy
- *
- * Frontend:
- *   wss://your-strengthsmp.onrender.com/
- *
- * Backend:
- *   ws://node1.coolcraft.network:25597/
- */
+'use strict';
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
-const PORT = process.env.PORT || 10000;
-
+const PORT = Number(process.env.PORT) || 10000;
 const UPSTREAM_WS =
-  process.env.UPSTREAM_WS ||
-  'ws://node1.coolcraft.network:25597/';
-
+  process.env.UPSTREAM_WS || 'ws://node1.coolcraft.network:25597/';
 const WS_SECRET_PATH = process.env.WS_SECRET_PATH || '';
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = path.resolve(__dirname, 'public');
+const MAX_QUEUE_BYTES = 2 * 1024 * 1024;
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
 }
 
 function contentType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-
-  return {
+  const types = {
     '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
-    '.mjs': 'application/javascript; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
@@ -45,61 +30,63 @@ function contentType(filePath) {
     '.svg': 'image/svg+xml',
     '.ico': 'image/x-icon',
     '.txt': 'text/plain; charset=utf-8'
-  }[ext] || 'application/octet-stream';
+  };
+
+  return types[path.extname(filePath).toLowerCase()] ||
+    'application/octet-stream';
+}
+
+function sendText(res, status, message) {
+  res.writeHead(status, {
+    'content-type': 'text/plain; charset=utf-8'
+  });
+  res.end(message);
 }
 
 function serveStatic(req, res) {
-  const urlPathRaw = (req.url || '/').split('?')[0];
+  const rawPath = (req.url || '/').split('?')[0];
 
-  if (urlPathRaw === '/health') {
-    res.writeHead(200, {
-      'content-type': 'text/plain; charset=utf-8'
-    });
-    res.end('ok\n');
+  if (rawPath === '/health') {
+    sendText(res, 200, 'ok\n');
     return;
   }
 
-  let urlPath = urlPathRaw === '/' ? '/index.html' : urlPathRaw;
-  let decodedPath;
-
+  let decoded;
   try {
-    decodedPath = decodeURIComponent(urlPath);
+    decoded = decodeURIComponent(
+      rawPath === '/' ? '/index.html' : rawPath
+    );
   } catch {
-    res.writeHead(400);
-    res.end('Bad Request');
+    sendText(res, 400, 'Bad Request');
     return;
   }
 
-  const safePath = path.normalize(decodedPath).replace(/^[/\\]+/, '');
-  const filePath = path.resolve(PUBLIC_DIR, safePath);
+  const relativePath = decoded.replace(/^[/\\]+/, '');
+  const filePath = path.resolve(PUBLIC_DIR, relativePath);
 
   if (
-    filePath !== path.resolve(PUBLIC_DIR) &&
-    !filePath.startsWith(path.resolve(PUBLIC_DIR) + path.sep)
+    filePath !== PUBLIC_DIR &&
+    !filePath.startsWith(PUBLIC_DIR + path.sep)
   ) {
-    res.writeHead(403);
-    res.end('Forbidden');
+    sendText(res, 403, 'Forbidden');
     return;
   }
 
-  fs.stat(filePath, (err, stat) => {
-    const chosen =
-      !err && stat.isFile()
+  fs.stat(filePath, (statError, stat) => {
+    const selectedFile =
+      !statError && stat.isFile()
         ? filePath
         : path.join(PUBLIC_DIR, 'index.html');
 
-    fs.readFile(chosen, (readErr, data) => {
-      if (readErr) {
-        res.writeHead(404, {
-          'content-type': 'text/plain; charset=utf-8'
-        });
-        res.end('Not Found');
+    fs.readFile(selectedFile, (readError, data) => {
+      if (readError) {
+        sendText(res, 404, 'Not Found');
         return;
       }
 
       res.writeHead(200, {
-        'content-type': contentType(chosen),
-        'cache-control': chosen.endsWith('.html')
+        'content-type': contentType(selectedFile),
+        'cache-control': selectedFile.endsWith('.html')
           ? 'no-cache'
           : 'public, max-age=86400'
       });
@@ -123,32 +110,27 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
 
-  const pathOnly = (req.url || '/').split('?')[0];
+  const requestPath = (req.url || '/').split('?')[0];
 
-  if (WS_SECRET_PATH && pathOnly !== WS_SECRET_PATH) {
+  if (WS_SECRET_PATH && requestPath !== WS_SECRET_PATH) {
     socket.destroy();
     return;
   }
 
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
+  wss.handleUpgrade(req, socket, head, client => {
+    wss.emit('connection', client, req);
   });
 });
 
 wss.on('connection', (client, req) => {
-  // Render normally supplies this header for incoming requests.
-  const forwardedFor = (req.headers['x-forwarded-for'] || '')
-    .toString()
-    .split(',')[0]
-    .trim();
+  const forwardedFor = String(
+    req.headers['x-forwarded-for'] || ''
+  ).split(',')[0].trim();
 
-  const ip =
-    forwardedFor ||
-    req.socket.remoteAddress ||
-    'unknown';
+  const clientIp =
+    forwardedFor || req.socket.remoteAddress || 'unknown';
 
-  const pathOnly = (req.url || '/').split('?')[0];
-
+  const requestPath = (req.url || '/').split('?')[0];
   const protocolHeader = req.headers['sec-websocket-protocol'];
 
   const protocols = protocolHeader
@@ -156,143 +138,156 @@ wss.on('connection', (client, req) => {
     : undefined;
 
   log('[IN ] connection', {
-    ip,
-    path: pathOnly,
-    protocols
+    ip: clientIp,
+    path: requestPath,
+    protocols: protocols || []
   });
 
-  const MAX_QUEUE_BYTES = 2 * 1024 * 1024;
-  const queue = [];
-  let queueBytes = 0;
-  let closed = false;
+  let finished = false;
+  let queuedBytes = 0;
+  const pendingMessages = [];
 
-  // Forward the client's address to EaglerXServer.
   const upstream = new WebSocket(
     UPSTREAM_WS,
     protocols,
     {
       headers: {
-        'X-Forwarded-For': ip
+        'X-Forwarded-For': clientIp
       },
       perMessageDeflate: false,
       handshakeTimeout: 15000
     }
   );
 
-  function kill(reason) {
-    if (closed) return;
-    closed = true;
+  function closeBoth(reason) {
+    if (finished) return;
+    finished = true;
+
+    log('[CLS]', { ip: clientIp, reason });
 
     try {
-      if (
-        client.readyState === WebSocket.OPEN ||
-        client.readyState === WebSocket.CONNECTING
-      ) {
-        client.terminate();
-      }
+      client.terminate();
     } catch {}
 
     try {
-      if (
-        upstream.readyState === WebSocket.OPEN ||
-        upstream.readyState === WebSocket.CONNECTING
-      ) {
-        upstream.terminate();
-      }
+      upstream.terminate();
     } catch {}
-
-    log('[CLS]', { ip, reason });
   }
 
-  function enqueue(data, isBinary) {
-    const size = typeof data === 'string'
-      ? Buffer.byteLength(data)
-      : data.length;
+  function sendUpstream(data, isBinary) {
+    if (finished) return;
 
-    queue.push({ data, isBinary, size });
-    queueBytes += size;
-
-    if (queueBytes > MAX_QUEUE_BYTES) {
-      kill('queue overflow');
+    if (upstream.readyState !== WebSocket.OPEN) {
+      closeBoth('upstream unavailable');
+      return;
     }
+
+    upstream.send(data, {
+      binary: isBinary,
+      compress: false
+    }, error => {
+      if (error) {
+        log('[UP ] send error', error.message);
+        closeBoth('upstream send error');
+      }
+    });
   }
 
   client.on('message', (data, isBinary) => {
+    if (finished) return;
+
     if (upstream.readyState === WebSocket.OPEN) {
-      upstream.send(data, {
-        binary: isBinary,
-        compress: false
-      });
-    } else if (upstream.readyState === WebSocket.CONNECTING) {
-      enqueue(data, isBinary);
-    } else {
-      kill('upstream unavailable');
+      sendUpstream(data, isBinary);
+      return;
     }
+
+    if (upstream.readyState === WebSocket.CONNECTING) {
+      const size = typeof data === 'string'
+        ? Buffer.byteLength(data)
+        : data.length;
+
+      queuedBytes += size;
+
+      if (queuedBytes > MAX_QUEUE_BYTES) {
+        closeBoth('message queue overflow');
+        return;
+      }
+
+      pendingMessages.push({ data, isBinary, size });
+      return;
+    }
+
+    closeBoth('upstream unavailable');
   });
 
   upstream.on('open', () => {
     log('[UP ] connected', {
-      ip,
+      ip: clientIp,
       upstream: UPSTREAM_WS
     });
 
-    while (queue.length && upstream.readyState === WebSocket.OPEN) {
-      const packet = queue.shift();
-      queueBytes -= packet.size;
-
-      upstream.send(packet.data, {
-        binary: packet.isBinary,
-        compress: false
-      });
+    while (
+      !finished &&
+      pendingMessages.length &&
+      upstream.readyState === WebSocket.OPEN
+    ) {
+      const item = pendingMessages.shift();
+      queuedBytes -= item.size;
+      sendUpstream(item.data, item.isBinary);
     }
   });
 
   upstream.on('message', (data, isBinary) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(data, {
-        binary: isBinary,
-        compress: false
-      });
-    }
+    if (finished || client.readyState !== WebSocket.OPEN) return;
+
+    client.send(data, {
+      binary: isBinary,
+      compress: false
+    }, error => {
+      if (error) {
+        log('[IN ] send error', error.message);
+        closeBoth('client send error');
+      }
+    });
   });
 
   upstream.on('close', (code, reason) => {
     log('[UP ] closed', {
-      ip,
+      ip: clientIp,
       code,
-      reason: reason?.toString?.() || ''
+      reason: reason ? reason.toString() : ''
     });
-
-    kill('upstream closed');
+    closeBoth('upstream closed');
   });
 
   client.on('close', (code, reason) => {
     log('[IN ] closed', {
-      ip,
+      ip: clientIp,
       code,
-      reason: reason?.toString?.() || ''
+      reason: reason ? reason.toString() : ''
     });
-
-    kill('client closed');
+    closeBoth('client closed');
   });
 
-  upstream.on('error', (error) => {
+  upstream.on('error', error => {
     log('[UP ] error', {
-      ip,
-      error: error?.message || String(error)
+      ip: clientIp,
+      error: error.message || String(error)
     });
-
-    kill('upstream error');
+    closeBoth('upstream error');
   });
 
-  client.on('error', (error) => {
+  client.on('error', error => {
     log('[IN ] error', {
-      ip,
-      error: error?.message || String(error)
+      ip: clientIp,
+      error: error.message || String(error)
     });
-
-    kill('client error');
+    closeBoth('client error');
   });
+});
+
+server.on('error', error => {
+  log('[HTTP] server error', error.message || String(error));
 });
 
 server.listen(PORT, '0.0.0.0', () => {
@@ -301,4 +296,3 @@ server.listen(PORT, '0.0.0.0', () => {
     `WSS frontend | WS upstream: ${UPSTREAM_WS}`
   );
 });
-```
