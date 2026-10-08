@@ -1,3 +1,4 @@
+```js
 'use strict';
 
 /**
@@ -21,9 +22,7 @@ const UPSTREAM_WS =
   process.env.UPSTREAM_WS ||
   'ws://node1.coolcraft.network:25597/';
 
-const WS_SECRET_PATH =
-  process.env.WS_SECRET_PATH || '';
-
+const WS_SECRET_PATH = process.env.WS_SECRET_PATH || '';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 function log(...args) {
@@ -50,45 +49,35 @@ function contentType(filePath) {
 }
 
 function serveStatic(req, res) {
-  const urlPathRaw = (req.url || '').split('?')[0];
+  const urlPathRaw = (req.url || '/').split('?')[0];
 
   if (urlPathRaw === '/health') {
     res.writeHead(200, {
       'content-type': 'text/plain; charset=utf-8'
     });
-
     res.end('ok\n');
     return;
   }
 
-  let urlPath = urlPathRaw;
-
-  if (urlPath === '/' || urlPath === '') {
-    urlPath = '/index.html';
-  }
-
-  let safePath;
+  let urlPath = urlPathRaw === '/' ? '/index.html' : urlPathRaw;
+  let decodedPath;
 
   try {
-    safePath = path
-      .normalize(decodeURIComponent(urlPath))
-      .replace(/^(\.\.(\/|\\|$))+/, '');
+    decodedPath = decodeURIComponent(urlPath);
   } catch {
-    res.writeHead(400, {
-      'content-type': 'text/plain; charset=utf-8'
-    });
-
+    res.writeHead(400);
     res.end('Bad Request');
     return;
   }
 
-  const filePath = path.join(PUBLIC_DIR, safePath);
+  const safePath = path.normalize(decodedPath).replace(/^[/\\]+/, '');
+  const filePath = path.resolve(PUBLIC_DIR, safePath);
 
-  if (!filePath.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403, {
-      'content-type': 'text/plain; charset=utf-8'
-    });
-
+  if (
+    filePath !== path.resolve(PUBLIC_DIR) &&
+    !filePath.startsWith(path.resolve(PUBLIC_DIR) + path.sep)
+  ) {
+    res.writeHead(403);
     res.end('Forbidden');
     return;
   }
@@ -104,7 +93,6 @@ function serveStatic(req, res) {
         res.writeHead(404, {
           'content-type': 'text/plain; charset=utf-8'
         });
-
         res.end('Not Found');
         return;
       }
@@ -130,52 +118,41 @@ const wss = new WebSocket.Server({
 });
 
 server.on('upgrade', (req, socket, head) => {
-  const upgrade =
-    (req.headers.upgrade || '').toLowerCase();
-
-  if (upgrade !== 'websocket') {
+  if ((req.headers.upgrade || '').toLowerCase() !== 'websocket') {
     socket.destroy();
     return;
   }
 
-  const pathOnly =
-    (req.url || '').split('?')[0];
+  const pathOnly = (req.url || '/').split('?')[0];
 
   if (WS_SECRET_PATH && pathOnly !== WS_SECRET_PATH) {
     socket.destroy();
     return;
   }
 
-  wss.handleUpgrade(
-    req,
-    socket,
-    head,
-    (ws) => {
-      wss.emit('connection', ws, req);
-    }
-  );
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
 });
 
 wss.on('connection', (client, req) => {
+  // Render normally supplies this header for incoming requests.
+  const forwardedFor = (req.headers['x-forwarded-for'] || '')
+    .toString()
+    .split(',')[0]
+    .trim();
+
   const ip =
-    (req.headers['x-forwarded-for'] || '')
-      .toString()
-      .split(',')[0]
-      .trim() ||
+    forwardedFor ||
     req.socket.remoteAddress ||
     'unknown';
 
-  const pathOnly =
-    (req.url || '').split('?')[0];
+  const pathOnly = (req.url || '/').split('?')[0];
 
-  const protocolHeader =
-    req.headers['sec-websocket-protocol'];
+  const protocolHeader = req.headers['sec-websocket-protocol'];
 
   const protocols = protocolHeader
-    ? protocolHeader
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
+    ? protocolHeader.split(',').map(s => s.trim()).filter(Boolean)
     : undefined;
 
   log('[IN ] connection', {
@@ -185,52 +162,54 @@ wss.on('connection', (client, req) => {
   });
 
   const MAX_QUEUE_BYTES = 2 * 1024 * 1024;
-
   const queue = [];
   let queueBytes = 0;
+  let closed = false;
 
+  // Forward the client's address to EaglerXServer.
   const upstream = new WebSocket(
     UPSTREAM_WS,
     protocols,
     {
+      headers: {
+        'X-Forwarded-For': ip
+      },
       perMessageDeflate: false,
       handshakeTimeout: 15000
     }
   );
 
-  let closed = false;
-
   function kill(reason) {
     if (closed) return;
-
     closed = true;
 
     try {
-      client.terminate();
+      if (
+        client.readyState === WebSocket.OPEN ||
+        client.readyState === WebSocket.CONNECTING
+      ) {
+        client.terminate();
+      }
     } catch {}
 
     try {
-      upstream.terminate();
+      if (
+        upstream.readyState === WebSocket.OPEN ||
+        upstream.readyState === WebSocket.CONNECTING
+      ) {
+        upstream.terminate();
+      }
     } catch {}
 
-    log('[CLS]', {
-      ip,
-      reason
-    });
+    log('[CLS]', { ip, reason });
   }
 
   function enqueue(data, isBinary) {
-    const size =
-      typeof data === 'string'
-        ? Buffer.byteLength(data)
-        : data?.length || 0;
+    const size = typeof data === 'string'
+      ? Buffer.byteLength(data)
+      : data.length;
 
-    queue.push({
-      data,
-      isBinary,
-      size
-    });
-
+    queue.push({ data, isBinary, size });
     queueBytes += size;
 
     if (queueBytes > MAX_QUEUE_BYTES) {
@@ -244,16 +223,11 @@ wss.on('connection', (client, req) => {
         binary: isBinary,
         compress: false
       });
-
-      return;
-    }
-
-    if (upstream.readyState === WebSocket.CONNECTING) {
+    } else if (upstream.readyState === WebSocket.CONNECTING) {
       enqueue(data, isBinary);
-      return;
+    } else {
+      kill('upstream unavailable');
     }
-
-    kill('upstream unavailable');
   });
 
   upstream.on('open', () => {
@@ -262,12 +236,8 @@ wss.on('connection', (client, req) => {
       upstream: UPSTREAM_WS
     });
 
-    while (
-      queue.length &&
-      upstream.readyState === WebSocket.OPEN
-    ) {
+    while (queue.length && upstream.readyState === WebSocket.OPEN) {
       const packet = queue.shift();
-
       queueBytes -= packet.size;
 
       upstream.send(packet.data, {
@@ -331,3 +301,4 @@ server.listen(PORT, '0.0.0.0', () => {
     `WSS frontend | WS upstream: ${UPSTREAM_WS}`
   );
 });
+```
